@@ -12,6 +12,7 @@ import numpy as np
 import glob
 import os
 import xarray as xr
+import json
 
 
 def load_ctd_data(work_dir, start_year, end_year):
@@ -110,6 +111,8 @@ def normalize_dataset(ds, var_methods=None):
         "Temperature": "zscore",
         "Salinity": "minmax",
         "Oxygen": "zscore",
+        "Bathymetry": "minmax",
+        "Depth": "minmax",
         "Latitude": None,
         "Longitude": None,
     }
@@ -152,17 +155,21 @@ def normalize_dataset(ds, var_methods=None):
 
     return ds_norm, scale_params
 
-def denormalize_variable(var_name, data_norm, scale_params):
-    """Rescale normalized data back to original physical units."""
-    params = scale_params[var_name]
-    method = params["method"]
+def apply_normalization(ds, scale_params):
+    """Apply precomputed normalization parameters to a dataset."""
+    ds_norm = ds.copy(deep=True)
+    for var, params in scale_params.items():
+        if params["method"] == "zscore":
+            mean_val = params["mean"]
+            std_val = params["std"]
+            ds_norm[var] = (ds[var] - mean_val) / std_val
 
-    if method == "zscore":
-        return data_norm * params["std"] + params["mean"]
-    elif method == "minmax":
-        return data_norm * (params["max"] - params["min"]) + params["min"]
-    else:
-        return data_norm  # unchanged
+        elif params["method"] == "minmax":
+            min_val = params["min"]
+            max_val = params["max"]
+            ds_norm[var] = (ds[var] - min_val) / (max_val - min_val)
+        # else: leave unchanged
+    return ds_norm
 
 
 def make_synthetic_linep(time, stations, depths) -> xr.Dataset:
@@ -188,7 +195,7 @@ def make_synthetic_linep(time, stations, depths) -> xr.Dataset:
 
     return ds
 
-def build_edge_index(num_stations, num_depths):
+def build_graph_structure(num_stations, num_depths):
     # node index increases down each depth column first, then moves to the next station.
     
     # Generates node edge connections
@@ -207,7 +214,7 @@ def build_edge_index(num_stations, num_depths):
     edge_index = np.concatenate([edge_index, edge_index[::-1]], axis=1)
     return edge_index
 
-def prepare_graph_data(ds_input: xr.DataArray, ds_target: xr.DataArray):
+def reshape_to_graph_structure(ds_input: xr.DataArray, ds_target: xr.DataArray):
     """
     Reshape input and target datasets (time, station, depth)
     into (time, node, feature) format for GNNs.
@@ -217,54 +224,55 @@ def prepare_graph_data(ds_input: xr.DataArray, ds_target: xr.DataArray):
     num_stations = ds_input.sizes["station"]
     num_depths = ds_input.sizes["depth"]
     num_nodes = num_stations * num_depths
-
-    # Flatten (time, station, depth) → (time, node)
-    input_vals_nodes = ds_input.values.reshape(num_times, num_nodes)
-    target_vals_nodes = ds_target.values.reshape(num_times, num_nodes)
+    num_features = len(ds_input.data_vars)
+    
+    ds_input_array = ds_input.to_array().values
+    arr = np.moveaxis(ds_input_array, 1, 0)             # (time, features, stations, depths)
+    arr = arr.transpose(0, 2, 3, 1)                     # (time, stations, depths, features)
+    # Flatten => (time, node, features)
+    input_vals_nodes = arr.reshape(num_times, num_nodes, num_features)
+    
+    ds_target_array = ds_target.to_array().values
+    arr = np.moveaxis(ds_target_array, 1, 0)            # (time, 1, stations, depths)
+    arr = arr.squeeze(axis=1)                           # (time, stations, depths)
+    # Flatten => (time, node)
+    target_vals_nodes = arr.reshape(num_times, num_nodes) 
 
     # Create mask and fill NaNs
     mask = ~np.isnan(target_vals_nodes)
     target_vals_nodes = np.nan_to_num(target_vals_nodes, nan=0.0)
-
-    # Static features
-    depths = ds_target.depth.values
-    depth_nodes = np.tile(depths, num_stations)
-    # ****** FAKE bathymetry values**********
-    bathy_nodes = np.repeat(np.array([700, 720, 800, 850, 1000]), num_depths)
-
-    static_feats = np.stack([bathy_nodes, depth_nodes], axis=1)
-
-    node_static_feats = np.tile(static_feats[None, :, :], (num_times, 1, 1))
-    node_features = np.concatenate(
-        [input_vals_nodes[..., np.newaxis], node_static_feats], axis=-1
-    )
+     
+    print("Input dimensions:")
+    print(f"times: {num_times}, stations: {num_stations}, depths: {num_depths}, features: {num_features}")
+    print(f"input features: {list(ds_input.data_vars)}")
+    print(f"target feature: {list(ds_target.data_vars)}")
     
-    print(f"S: {num_stations}, D: {num_depths}, N: {num_nodes}, T: {num_times}, F: {node_features.shape[2]}")
+    print("Output dimensions")
+    print(f"times: {num_times}, nodes: {num_nodes}, features: {num_features}")
+
     print("Input:", input_vals_nodes.shape)  # (time, nodes, features)
     print("Target:", target_vals_nodes.shape)  # (time, nodes)
-    print("node_features:", node_features.shape)  # (time, nodes, features)
     print("mask:", mask.shape)          # (time, nodes)
 
-    return node_features, target_vals_nodes, mask
+    return input_vals_nodes, target_vals_nodes, mask
 
-
-#%%
-
-def prepare_data(
+def prepare_gnn_data(
     work_dir: str,
     year_range: tuple[int, int],
     stations: list[str] | None = None,
     depths: list[float] | None = None,
-    variable: str = "Temperature",
+    target_variable: str = "Temperature",
 ):
     
     #work_dir = "/home/rlc001/data/ppp5/analysis/stat_downscaling-workshop"
     #year_range = (1999, 2000)
-    #variable = "Temperature"
+    #target_variable = "Temperature"
     #stations = ["P22", "P23", "P24", "P25", "P26"]
     #depths = [0.5, 10.5, 50.5, 100.5]
     
     start_year, end_year = year_range
+    
+    # Load CTD observations (target)
     ds = load_ctd_data(work_dir, start_year, end_year)
     
     # Subset stations and depths
@@ -279,25 +287,86 @@ def prepare_data(
     if depths is not None: 
         ds = ds.sel(depth=depths)
     # OR by depth range
-    # ds_mid = ds.sel(depth=slice(500, 2000))
+    # ds_mid = ds.sel(depth=slice(500, 2000)
     
-    # Normalize dataset
-    ds, scale_params = normalize_dataset(ds)
-    # Example denormalization for model output
-    #temp_original = denormalize_variable("Temperature", model_output_temp, scale_params)
+    # Subset target variable
+    ds_target = ds[[target_variable]]
+    stations = ds_target['station']
+    depths = ds_target['depth']
     
-    # Subset variables
-    ds_target = ds[variable]
-    
-    # Generate synthetic line p temperature 'model' data 
+    # Generate synthetic line p temperature 'model' data
+    # Replace this by loading model data
     ds_input = make_synthetic_linep(ds_target['time'], ds_target['station'], ds_target['depth'])
-    ds_input = ds_input[variable]
     
+    # Add static variables
+    # ****** FAKE bathymetry values**********
+    bathymetry_in = xr.DataArray(
+    [700, 720, 800, 850, 1000],
+    dims=("station",),
+    coords={"station": ds_input.station},
+    name="Bathymetry"
+    )
+    ds_input["Bathymetry"] = bathymetry_in.broadcast_like(ds_input[target_variable])
+    
+    depth_in = xr.DataArray(
+    depths,
+    dims=("depth",),
+    coords={"depth": ds_input.depth},
+    name="Depth"
+    )
+    ds_input["Depth"] = depth_in.broadcast_like(ds_input[target_variable])
+    
+    # === Split Data into train, validation, test ===
+    T = ds_input.sizes["time"]
+    # split ratios
+    train_ratio = 0.7
+    val_ratio = 0.15
+    # split indices
+    train_end = int(train_ratio * T)
+    val_end = int((train_ratio + val_ratio) * T)
+    
+    ds_input_train = ds_input.isel(time=slice(0, train_end))
+    ds_input_val   = ds_input.isel(time=slice(train_end, val_end))
+    ds_input_test  = ds_input.isel(time=slice(val_end, T))
+    
+    ds_target_train = ds_target.isel(time=slice(0, train_end))
+    ds_target_val   = ds_target.isel(time=slice(train_end, val_end))
+    ds_target_test  = ds_target.isel(time=slice(val_end, T))
+
+    # Normalization
+    # Compute scale parameters from training data and apply to validation and test
+    ds_input_train_norm, scale_params_in = normalize_dataset(ds_input_train)
+    # Save input normalization parameters
+    with open(f"{work_dir}/graph-neural-net/scale_params_in.json", "w") as f:
+        json.dump(scale_params_in, f, indent=2)
+    
+    # Apply same normalization to validation & test inputs
+    ds_input_val_norm  = apply_normalization(ds_input_val, scale_params_in)
+    ds_input_test_norm = apply_normalization(ds_input_test, scale_params_in)
+    
+    ds_target_train_norm, scale_params_target = normalize_dataset(ds_target_train)
+    # Save target normalization parameters
+    with open(f"{work_dir}/graph-neural-net/scale_params_target.json", "w") as f:
+        json.dump(scale_params_target, f, indent=2)
+    
+    # Apply same normalization to validation & test targets
+    ds_target_val_norm  = apply_normalization(ds_target_val, scale_params_target)
+    ds_target_test_norm = apply_normalization(ds_target_test, scale_params_target)
+
+    # reshape data into graph structure, and compute target value mask
+    print("\nTraining:")
+    node_features_train, target_vals_train, mask_train = reshape_to_graph_structure(ds_input_train_norm, ds_target_train_norm)
+    print("\nValidation:")
+    node_features_val, target_vals_val, mask_val = reshape_to_graph_structure(ds_input_val_norm, ds_target_val_norm)
+    print("\nTesting:")
+    node_features_test, target_vals_test, mask_test = reshape_to_graph_structure(ds_input_test_norm, ds_target_test_norm)
+
     # generate edge connections from graph nodes
-    edge_index = build_edge_index(len(ds_target['station']), len(ds_target['depth']))
+    edge_index = build_graph_structure(len(ds_target['station']), len(ds_target['depth']))
     
-    # reshape data into graph structure
-    node_features, target_vals_nodes, mask = prepare_graph_data(ds_input, ds_target)
+    train_data = (node_features_train, target_vals_train, mask_train, edge_index)
+    val_data = (node_features_val, target_vals_val, mask_val, edge_index)
+    test_data = (node_features_test, target_vals_test, mask_test, edge_index)
     
-    return node_features, target_vals_nodes, mask, edge_index
+    return train_data, val_data, test_data, stations, depths 
 
