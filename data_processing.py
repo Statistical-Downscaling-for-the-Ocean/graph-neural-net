@@ -87,7 +87,7 @@ def load_ctd_data(work_dir, start_year, end_year):
     )
     ds["depth"].attrs["units"] = "m"
     ds["Temperature"].attrs["units"] = "deg C"
-    ds["Salinity"].attrs["units"] = "PSS-78"
+    ds["Salinity"].attrs["units"] = "PSU"
     ds["Oxygen"].attrs["units"] = "umol/kg"
     ds["Longitude"].attrs["units"] = "deg"
     ds["Latitude"].attrs["units"] = "deg"
