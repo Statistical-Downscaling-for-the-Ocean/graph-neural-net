@@ -69,20 +69,20 @@ Visualization:
 ## File structure
 
 graph-neural-net/
-├── main.py                  # Main execution script
-├── data_processing.py       # Data loading and preprocessing
-├── model_definitions.py     # GNN model architectures  
-├── train.py                 # Training utilities
-├── evaluate.py              # Evaluation and visualization
-├── requirements.txt         # Python dependencies
-├── setup_env.sh             # Environment setup script
-├── scale_params_in.json     # Input normalization parameters  
-├── scale_params_target.json # Target normalization parameters
-├── best_model.pt            # Saved model weights
-└── plots/                   # Generated evaluation plots
-    ├── scatter_pred_vs_obs.png
-    ├── residual_hist.png
-    └── residual_heatmap.png
+- main.py                  # Main execution script
+- data_processing.py       # Data loading and preprocessing
+- model_definitions.py     # GNN model architectures  
+- train.py                 # Training utilities
+- evaluate.py              # Evaluation and visualization
+- requirements.txt         # Python dependencies
+- setup_env.sh             # Environment setup script
+- scale_params_in.json     # Input normalization parameters  
+- scale_params_target.json # Target normalization parameters
+- best_model.pt            # Saved model weights
+- plots/                   # Generated evaluation plots
+    - scatter_pred_vs_obs.png
+    - residual_hist.png
+    - residual_heatmap.png
 
 ## Next steps
 
