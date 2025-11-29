@@ -13,48 +13,39 @@ import glob
 import os
 import xarray as xr
 import json
+from pathlib import Path
 
 
-def load_ctd_data(work_dir, start_year, end_year):
+def load_ctd_data(ctd_data_file, start_year, end_year):
     """
     Load and process CTD csv files for a given year range.
     Returns an xarray.Dataset with dimensions (depth, station, time)).
     """
-    
-    data_dir = f"{work_dir}/data/lineP_ctds"
-    
-    # Collect files by year
-    all_files = sorted(glob.glob(os.path.join(data_dir, "*.csv")))
-    year_files = [
-        f for f in all_files
-        if any(str(y) in os.path.basename(f) for y in range(start_year, end_year + 1))
-    ]
 
-    if not year_files:
-        raise FileNotFoundError(f"No csv files found for years {start_year}-{end_year} in {data_dir}")
+    df_all = pd.read_csv(ctd_data_file, comment="#")
 
-    # Load and concatenate all data
-    df_list = []
-    for file in year_files:
-        print(f"Loading {os.path.basename(file)} ...")
-        df = pd.read_csv(file)
-        df = df.rename(columns={
-            "latitude": "Latitude",
-            "longitude": "Longitude",
-            "CTDTMP_ITS90_DEG_C": "Temperature",
-            "SALINITY_PSS78": "Salinity",
+    df_all["TIME"] = pd.to_datetime(df_all["TIME"], format="%Y-%m-%d %H:%M:%S")
+    df_all = df_all.rename(
+        columns={
+            "LATITUDE": "Latitude",
+            "LONGITUDE": "Longitude",
+            "TEMPERATURE": "Temperature",
+            "SALINITY": "Salinity",
             "OXYGEN_UMOL_KG": "Oxygen",
-            "PRS_bin_cntr": "Depth",
-        })
-        df["time"] = pd.to_datetime(df["time"])
-        df_list.append(df)
+            "PRESSURE_BIN_CENTER": "Depth",
+            "TIME": "time",
+            "STATION_ID": "station"
+        }
+    )
 
-    df_all = pd.concat(df_list, ignore_index=True)
+    start_date = pd.Timestamp(f"{start_year}-01-01")
+    end_date = pd.Timestamp(f"{end_year+1}-01-01")
+    df_all = df_all[(df_all["time"] >= start_date) & (df_all["time"] < end_date)]
 
     # Sort and get unique coords
     depths = np.sort(df_all["Depth"].unique())
     stations = sorted(
-        df_all["closest_linep_station_name"].unique(),
+        df_all["station"].unique(),
         key=lambda x: int(''.join(filter(str.isdigit, x)))
     )
     times = np.sort(df_all["time"].unique())
@@ -66,14 +57,14 @@ def load_ctd_data(work_dir, start_year, end_year):
     for t_idx, t in enumerate(times):
         df_t = df_all[df_all["time"] == t]
         for s_idx, s in enumerate(stations):
-            df_s = df_t[df_t["closest_linep_station_name"] == s]
+            df_s = df_t[df_t["station"] == s]
             if df_s.empty:
                 continue
             depth_idx = np.searchsorted(depths, df_s["Depth"])
             for var in variables:
                 valid = (depth_idx >= 0) & (depth_idx < len(depths))
                 data_dict[var][t_idx, s_idx, depth_idx[valid]] = df_s[var].values[valid]
-    
+
     # Return as xarray dataset
     ds = xr.Dataset(
         {
@@ -85,6 +76,9 @@ def load_ctd_data(work_dir, start_year, end_year):
             "depth": depths
         },
     )
+
+    print(ds)
+
     ds["depth"].attrs["units"] = "m"
     ds["Temperature"].attrs["units"] = "deg C"
     ds["Salinity"].attrs["units"] = "PSU"
@@ -257,13 +251,16 @@ def reshape_to_graph_structure(ds_input: xr.DataArray, ds_target: xr.DataArray):
     return input_vals_nodes, target_vals_nodes, mask
 
 def prepare_gnn_data(
-    work_dir: str,
+    work_dir: Path,
+    data_dir: Path,
     year_range: tuple[int, int],
     stations: list[str] | None = None,
     depths: list[float] | None = None,
     target_variable: str = "Temperature",
 ):
     
+    ctd_filename = data_dir / "lineP_CTD_training.csv"
+
     #work_dir = "/home/rlc001/data/ppp5/analysis/stat_downscaling-workshop"
     #year_range = (1999, 2000)
     #target_variable = "Temperature"
@@ -273,8 +270,8 @@ def prepare_gnn_data(
     start_year, end_year = year_range
     
     # Load CTD observations (target)
-    ds = load_ctd_data(work_dir, start_year, end_year)
-    
+    ds = load_ctd_data(ctd_filename, start_year, end_year)
+
     # Subset stations and depths
     #print(ds.station.values)
     if stations is not None: 

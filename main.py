@@ -16,12 +16,18 @@ from train import make_snapshot_data
 from evaluate import evaluate_model
 import torch
 from torch_geometric.loader import DataLoader
+from pathlib import Path
 
 # === Prepare Data ===
-work_dir = "/home/rlc001/data/ppp5/analysis/stat_downscaling-workshop"
+work_dir = "/path/to/my/projects/line_p/"
+data_dir = "/path/to/my/projects/line_p/graph-neural-net/data/observations"
+
+work_dir = Path(work_dir)
+data_dir = Path(data_dir)
 
 train_data, val_data, test_data, stations, depths = prepare_gnn_data(
     work_dir=work_dir,
+    data_dir=data_dir,
     year_range=(1999, 2000),
     stations=["P22", "P23", "P24", "P25", "P26"],
     depths=[0.5, 10.5, 50.5, 100.5],
