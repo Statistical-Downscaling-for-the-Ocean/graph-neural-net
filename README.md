@@ -87,6 +87,7 @@ graph-neural-net/
 ## Next steps
 
 ### Must dos
+ - Update code for the latest CTD data files (code was configured with earlier files that have since been updated.)
  - Replace synthetic model data with real ocean model output
  - Get actual bathymetry values
 
